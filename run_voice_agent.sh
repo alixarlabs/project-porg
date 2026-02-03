@@ -19,7 +19,7 @@ fi
 # Default agent URL
 AGENT_ARG=""
 if [[ ! "$*" =~ "--agent-url" ]] && [[ ! "$*" =~ "-a" ]]; then
-    AGENT_ARG="--agent-url http://localhost:8080"
+    AGENT_ARG="--agent-url http://localhost:8887"
 fi
 
 docker run -it --rm --runtime nvidia --network host \
@@ -27,5 +27,5 @@ docker run -it --rm --runtime nvidia --network host \
   -v "$SCRIPT_DIR:/workspace" \
   -v "$HOME/.cache:/root/.cache" \
   -w /workspace \
-  voice-agent:r38-cu130 \
+  porg-voice:r38-cu130 \
   python3 voice_agent.py $DEVICE_ARG $AGENT_ARG "$@"

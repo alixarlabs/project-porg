@@ -10,10 +10,10 @@ if [[ ! "$*" =~ "--device" ]] && [[ ! "$*" =~ "-d" ]]; then
     DEVICE_ARG="--device 36"
 fi
 
-# Default port 8080
+# Default port 8888
 PORT_ARG=""
 if [[ ! "$*" =~ "--port" ]] && [[ ! "$*" =~ "-p" ]]; then
-    PORT_ARG="--port 8080"
+    PORT_ARG="--port 8888"
 fi
 
 docker run -it --rm --runtime nvidia --network host \
@@ -21,5 +21,5 @@ docker run -it --rm --runtime nvidia --network host \
   -v "$SCRIPT_DIR:/workspace" \
   -v "$HOME/.cache:/root/.cache" \
   -w /workspace \
-  voice-agent:r38-cu130 \
+  porg-voice:r38-cu130 \
   python3 web_voice.py $DEVICE_ARG $PORT_ARG "$@"

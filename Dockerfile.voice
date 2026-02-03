@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install sounddevice soundfile fastapi uvicorn websockets
+RUN pip install sounddevice soundfile fastapi uvicorn websockets httpx
 
 # Pre-download Silero VAD model
 RUN python3 -c "import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)"
