@@ -1,0 +1,80 @@
+# Project Porg - Full Stack
+#
+# Services:
+#   - vllm: LLM inference server (Qwen2.5)
+#   - agent: Command interpreter API
+#   - voice: ASR + Web UI (optional, run separately)
+#
+# Usage:
+#   docker compose up -d          # Start LLM stack
+#   docker compose logs -f agent  # Watch agent logs
+#   ./run_web.sh                  # Run voice UI separately
+
+services:
+  # ==========================================================================
+  # vLLM - LLM Inference Server
+  # ==========================================================================
+  vllm:
+    image: nvcr.io/nvidia/tritonserver:25.08-vllm-python-py3
+    runtime: nvidia
+    command: >
+      vllm serve Qwen/Qwen2.5-7B-Instruct
+      --host 0.0.0.0
+      --port 8000
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --max-model-len 8192
+      --gpu-memory-utilization 0.8
+    ports:
+      - "8000:8000"
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ==========================================================================
+  # Agent API - Command Interpreter
+  # ==========================================================================
+  agent:
+    build:
+      context: ./llm_service
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - VLLM_BASE_URL=http://vllm:8000/v1
+      - MODEL_NAME=Qwen/Qwen2.5-7B-Instruct
+      - MAX_TOKENS=512
+    depends_on:
+      vllm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+# Note: For production with larger models, modify the vllm command:
+#
+# For Qwen2.5-72B (quantized):
+#   vllm serve Qwen/Qwen2.5-72B-Instruct-AWQ \
+#     --quantization awq \
+#     --enable-auto-tool-choice \
+#     --tool-call-parser hermes
+#
+# For Llama 3.3 70B with speculative decoding:
+#   vllm serve RedHatAI/Llama-3.3-70B-Instruct-quantized.w4a16 \
+#     --speculative-config '{"method":"eagle3","model":"yuhuili/EAGLE3-LLaMA3.3-Instruct-70B","num_speculative_tokens":5}'

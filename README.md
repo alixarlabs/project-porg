@@ -1,166 +1,265 @@
 # Project Porg
 
-Real-time voice transcription using NVIDIA Parakeet ASR on Jetson AGX Thor. Features streaming speech-to-text with a web interface for live monitoring.
+Voice-controlled surgical assistant using NVIDIA Parakeet ASR and Qwen LLM on Jetson AGX Thor. Interprets natural language commands and converts them to structured tool calls for medical device control.
 
 ## Features
 
-- **Real-time transcription** - See partial results as you speak
+- **Real-time ASR** - Parakeet CTC with streaming partial results
 - **Voice Activity Detection** - Silero VAD for accurate speech detection
-- **Web Interface** - Browser-based UI showing live transcription
-- **Optimized for Jetson** - Runs on Jetson AGX Thor with CUDA 13.0
+- **LLM Command Interpretation** - Qwen2.5 with native tool calling
+- **Multi-source Input** - Supports microphone, XR headsets, or any text source
+- **Web Interface** - Browser-based UI for transcription monitoring
+- **REST + WebSocket API** - Easy integration with device gateways
+
+## Architecture
+
+```
+                    ┌─────────────────────────────────────┐
+                    │           Input Sources             │
+                    │  ┌─────────┐  ┌─────────┐  ┌─────┐ │
+                    │  │   Mic   │  │   XR    │  │ API │ │
+                    │  │ (ASR)   │  │ Headset │  │     │ │
+                    │  └────┬────┘  └────┬────┘  └──┬──┘ │
+                    └───────┼────────────┼─────────┼─────┘
+                            │            │         │
+                            ▼            ▼         ▼
+┌─────────────┐      ┌─────────────────────────────────────┐
+│  Parakeet   │      │           Agent API (:8080)         │
+│  ASR        │─────▶│  - Receives text commands           │
+│  (voice)    │      │  - Manages tool definitions         │
+└─────────────┘      │  - Conversation context             │
+                     └──────────────────┬──────────────────┘
+                                        │
+                                        ▼
+                     ┌──────────────────────────────────────┐
+                     │           vLLM (:8000)               │
+                     │  - Qwen2.5 with tool calling         │
+                     │  - OpenAI-compatible API             │
+                     │  - Hermes-style function parsing     │
+                     └──────────────────┬──────────────────┘
+                                        │
+                                        ▼
+                     ┌──────────────────────────────────────┐
+                     │         Structured Tool Calls        │
+                     │  {                                   │
+                     │    "name": "adjust_surgical_light",  │
+                     │    "arguments": {"intensity": 80}    │
+                     │  }                                   │
+                     └──────────────────┬──────────────────┘
+                                        │
+                     ┌──────────────────┼──────────────────┐
+                     ▼                  ▼                  ▼
+               ┌──────────┐      ┌──────────┐      ┌──────────┐
+               │  Lights  │      │  Table   │      │ Displays │
+               └──────────┘      └──────────┘      └──────────┘
+```
 
 ## Quick Start
 
-### Prerequisites
-
-- NVIDIA Jetson AGX Thor (L4T R38.3.0 / JetPack 7.1)
-- Docker with NVIDIA runtime
-- USB microphone or webcam with mic
-
-### Build the Container
+### 1. Start the LLM Stack
 
 ```bash
-# Build the voice agent container
-docker build -t voice-agent:r38-cu130 -f Dockerfile.voice .
+# Option A: Using docker-compose (recommended)
+docker compose up -d
+
+# Option B: Manual startup
+./run_llm.sh &      # Terminal 1: vLLM server
+./run_agent.sh &    # Terminal 2: Agent API
 ```
 
-### Run with Web Interface
+### 2. Test with CLI
+
+```bash
+# Interactive testing
+python test_agent.py
+
+# Single command
+python test_agent.py "dim the lights to 50 percent"
+```
+
+### 3. Run Voice Agent
+
+```bash
+# Full voice pipeline (requires LLM stack running)
+./run_voice_agent.sh
+```
+
+### 4. Web Interface (ASR only)
 
 ```bash
 ./run_web.sh
+# Open http://localhost:8888
 ```
 
-Open http://localhost:8888 in your browser. Speak into your microphone and watch transcriptions appear in real-time.
+## API Reference
 
-### Run CLI Only
+### Agent API (port 8080)
+
+#### POST /command
+Process a voice command and return tool calls.
 
 ```bash
-./run_voice.sh
+curl -X POST http://localhost:8080/command \
+  -H "Content-Type: application/json" \
+  -d '{"text": "raise the table 10 centimeters", "session_id": "or1"}'
 ```
 
-### Transcribe a File
-
-```bash
-docker run --rm --runtime nvidia \
-  -v "$(pwd):/workspace" \
-  -v "$HOME/.cache:/root/.cache" \
-  -w /workspace \
-  voice-agent:r38-cu130 \
-  python3 transcribe_file.py audio.wav
+Response:
+```json
+{
+  "tool_calls": [
+    {
+      "id": "call_123",
+      "name": "adjust_operating_table",
+      "arguments": {"height_change_cm": 10}
+    }
+  ],
+  "message": null,
+  "needs_confirmation": false,
+  "processing_time_ms": 145.2
+}
 ```
 
-## Configuration
+#### GET /tools
+List all available device controls.
 
-### Audio Device
+#### GET /health
+Health check with model info.
 
-List available devices:
-```bash
-docker run --rm --device /dev/snd voice-agent:r38-cu130 \
-  python3 -c "import sounddevice as sd; print(sd.query_devices())"
-```
+#### WebSocket /ws/{session_id}
+Real-time bidirectional command processing.
 
-Specify a device:
-```bash
-./run_web.sh --device 2
-```
+### Available Tools
 
-### Port
-
-Change the web interface port:
-```bash
-./run_web.sh --port 9000
-```
+| Tool | Description |
+|------|-------------|
+| `adjust_surgical_light` | Control intensity and position |
+| `adjust_operating_table` | Height, tilt, lateral tilt |
+| `control_room_environment` | Ambient light, temperature, music |
+| `control_display` | Route video sources to displays |
+| `request_assistance` | Alert team members |
+| `control_insufflator` | CO2 pressure and flow |
+| `start_recording` | Surgical video recording |
 
 ## Project Structure
 
 ```
 .
-├── Dockerfile.voice      # Container with ASR, VAD, and web dependencies
-├── Dockerfile.parakeet   # Minimal ASR-only container
-├── web_voice.py          # Web interface with WebSocket streaming
-├── voice_input.py        # CLI streaming transcription
-├── transcribe_file.py    # File transcription utility
-├── test_audio_input.py   # Audio device testing
-├── run_web.sh            # Launch web interface
-└── run_voice.sh          # Launch CLI interface
+├── docker-compose.yml        # Full stack orchestration
+├── llm_service/
+│   ├── agent_api.py          # Command interpreter API
+│   ├── Dockerfile            # Agent container
+│   └── requirements.txt
+├── voice_agent.py            # Integrated ASR → LLM pipeline
+├── voice_input.py            # CLI ASR only
+├── web_voice.py              # Web UI for ASR
+├── Dockerfile.voice          # ASR container
+├── run_llm.sh                # Start vLLM server
+├── run_agent.sh              # Start agent API
+├── run_voice_agent.sh        # Full voice pipeline
+├── run_web.sh                # Web transcription UI
+└── test_agent.py             # API test client
 ```
 
-## Architecture
+## Configuration
 
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  Microphone │────▶│  Silero VAD │────▶│  Parakeet   │
-│  (16kHz)    │     │  (Speech    │     │  ASR        │
-└─────────────┘     │   Detect)   │     │  (CTC 0.6B) │
-                    └─────────────┘     └──────┬──────┘
-                                               │
-                    ┌─────────────┐             │
-                    │  WebSocket  │◀────────────┘
-                    │  Broadcast  │
-                    └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │   Browser   │
-                    │   (Web UI)  │
-                    └─────────────┘
-```
+### Models
 
-## Supported Models
+| Model | Size | Speed | Use Case |
+|-------|------|-------|----------|
+| `Qwen/Qwen2.5-7B-Instruct` | 7B | Fast | Development/testing |
+| `Qwen/Qwen2.5-32B-Instruct` | 32B | Medium | Production (balanced) |
+| `Qwen/Qwen2.5-72B-Instruct-AWQ` | 72B | Slower | Production (best quality) |
 
-| Model | Type | Notes |
-|-------|------|-------|
-| `nvidia/parakeet-ctc-0.6b` | CTC | Default, fast, non-autoregressive |
-| `nvidia/parakeet-rnnt-0.6b` | RNN-T | Streaming capable |
-| `nvidia/parakeet-tdt-0.6b-v2` | TDT | Better accuracy |
-
-Use `--model` to switch:
+Change model in `docker-compose.yml` or via environment:
 ```bash
-./run_web.sh --model nvidia/parakeet-rnnt-0.6b
+MODEL=Qwen/Qwen2.5-32B-Instruct ./run_llm.sh
 ```
 
-## Hardware Environment
+### Environment Variables
 
-| Component | Version |
-|-----------|---------|
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLLM_BASE_URL` | `http://localhost:8000/v1` | vLLM server URL |
+| `MODEL_NAME` | `Qwen/Qwen2.5-7B-Instruct` | Model to use |
+| `MAX_TOKENS` | `512` | Max response tokens |
+
+## Adding Custom Tools
+
+Edit `llm_service/agent_api.py` and add to `SURGICAL_TOOLS`:
+
+```python
+{
+    "type": "function",
+    "function": {
+        "name": "your_device_control",
+        "description": "What this device does",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "param1": {"type": "integer", "description": "..."},
+                "param2": {"type": "string", "enum": ["a", "b", "c"]}
+            },
+            "required": ["param1"]
+        }
+    }
+}
+```
+
+## XR Headset Integration
+
+The Agent API accepts commands from any source. For XR headsets:
+
+```python
+import requests
+
+# From your XR app's speech recognition
+transcribed_text = xr_speech_to_text()
+
+# Send to agent
+response = requests.post(
+    "http://jetson-thor:8080/command",
+    json={"text": transcribed_text, "session_id": "headset_1"}
+)
+
+# Execute tool calls
+for tool_call in response.json()["tool_calls"]:
+    execute_device_command(tool_call)
+```
+
+Or use WebSocket for real-time:
+```javascript
+const ws = new WebSocket("ws://jetson-thor:8080/ws/headset_1");
+ws.send(JSON.stringify({text: "more light please"}));
+ws.onmessage = (e) => handleToolCalls(JSON.parse(e.data));
+```
+
+## Hardware Requirements
+
+| Component | Specification |
+|-----------|---------------|
 | Device | NVIDIA Jetson AGX Thor |
+| Memory | 128GB unified (for 70B+ models) |
 | L4T | R38.3.0 |
-| JetPack | 7.1 |
 | CUDA | 13.0 |
-| Python | 3.12 |
 
-## Container Details
+## Performance
 
-Built on `nemo:r38.3.arm64-sbsa-cu130-24.04-numba` with:
-- PyTorch 2.10
-- NeMo Toolkit (ASR)
-- Silero VAD
-- FastAPI + WebSockets
-- sounddevice + soundfile
-
-**Note**: Uses `lhotse==1.29.0` for NeMo compatibility (newer versions have breaking changes).
-
-## Development Notes
-
-### Building the Base Container
-
-If you need to rebuild the base NeMo container:
-
-```bash
-git clone --depth 1 https://github.com/dusty-nv/jetson-containers.git
-cd jetson-containers
-./build.sh nemo --skip-tests=all
-```
-
-### Known Issues
-
-- First run downloads the Parakeet model (~1.2GB) to `~/.cache/huggingface/`
-- TDT models may have Lhotse compatibility issues; CTC model is most reliable
-- Silero VAD requires exactly 512 samples per chunk at 16kHz
+| Component | Latency |
+|-----------|---------|
+| ASR (Parakeet CTC) | ~100-500ms |
+| LLM (Qwen 7B) | ~100-200ms |
+| LLM (Qwen 72B AWQ) | ~500-1000ms |
+| **End-to-end** | **~1-2 seconds** |
 
 ## Roadmap
 
-- [ ] TTS (text-to-speech) integration
-- [ ] Local LLM integration for voice agent
+- [x] ASR with streaming transcription
+- [x] Web interface for monitoring
+- [x] LLM with tool calling
+- [x] REST + WebSocket API
+- [ ] TTS for voice responses
+- [ ] Device gateway integration
 - [ ] Wake word detection
 - [ ] Multi-language support
 
@@ -170,7 +269,8 @@ MIT
 
 ## References
 
-- [NVIDIA Parakeet Models](https://huggingface.co/nvidia/parakeet-ctc-0.6b)
-- [NeMo Toolkit](https://github.com/NVIDIA/NeMo)
+- [NVIDIA Parakeet](https://huggingface.co/nvidia/parakeet-ctc-0.6b)
+- [Qwen2.5](https://huggingface.co/Qwen/Qwen2.5-72B-Instruct)
+- [vLLM](https://docs.vllm.ai/)
 - [Silero VAD](https://github.com/snakers4/silero-vad)
 - [Jetson Containers](https://github.com/dusty-nv/jetson-containers)
