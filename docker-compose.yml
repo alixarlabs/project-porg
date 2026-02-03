@@ -19,13 +19,13 @@ services:
     image: nvcr.io/nvidia/tritonserver:25.08-vllm-python-py3
     runtime: nvidia
     command: >
-      vllm serve Qwen/Qwen2.5-7B-Instruct
+      vllm serve Qwen/Qwen2.5-3B-Instruct
       --host 0.0.0.0
       --port 8889
       --enable-auto-tool-choice
       --tool-call-parser hermes
-      --max-model-len 8192
-      --gpu-memory-utilization 0.6
+      --max-model-len 4096
+      --gpu-memory-utilization 0.3
     ports:
       - "8889:8889"
     volumes:
@@ -58,8 +58,8 @@ services:
       - "8887:8887"
     environment:
       - VLLM_BASE_URL=http://vllm:8889/v1
-      - MODEL_NAME=Qwen/Qwen2.5-7B-Instruct
-      - MAX_TOKENS=512
+      - MODEL_NAME=Qwen/Qwen2.5-3B-Instruct
+      - MAX_TOKENS=256
     depends_on:
       vllm:
         condition: service_healthy
