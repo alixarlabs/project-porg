@@ -10,6 +10,7 @@ final transcriptions to the Agent API for command interpretation.
 import asyncio
 import json
 import numpy as np
+import socket
 import threading
 import queue
 import time
@@ -34,6 +35,11 @@ SILENCE_THRESHOLD = 0.5
 
 # Agent API settings
 AGENT_URL = "http://localhost:8887"
+
+# Jango control settings (UDP to headset control port)
+JANGO_HOST = "localhost"
+JANGO_PORT = 9000
+JANGO_ENABLED = True
 
 app = FastAPI()
 
@@ -459,10 +465,12 @@ class WebVoicePipeline:
     """Voice pipeline that broadcasts to WebSocket clients and calls Agent API"""
 
     def __init__(self, broadcast_func, agent_url: str, model_name: str = 'nvidia/parakeet-ctc-0.6b',
-                 input_device: int = None):
+                 input_device: int = None, jango_host: str = None, jango_port: int = None):
         self.broadcast = broadcast_func
         self.agent_url = agent_url
         self.input_device = input_device
+        self.jango_host = jango_host
+        self.jango_port = jango_port
 
         print("Initializing VAD...")
         self.vad = SileroVAD()
@@ -481,6 +489,12 @@ class WebVoicePipeline:
 
         # HTTP client for agent API
         self.http_client = httpx.Client(timeout=30.0)
+
+        # UDP socket for Jango control
+        self.udp_socket = None
+        if self.jango_host and self.jango_port:
+            self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            print(f"Jango UDP: {self.jango_host}:{self.jango_port}")
 
     def _audio_callback(self, indata, frames, time_info, status):
         if status:
@@ -551,15 +565,24 @@ class WebVoicePipeline:
     def _call_agent(self, text: str, duration: float):
         """Send transcribed text to Agent API for command interpretation"""
         try:
-            print(f"[Agent] Sending to {self.agent_url}/command...")
+            print(f"[Agent] Sending to {self.agent_url}/command/execute...")
             response = self.http_client.post(
-                f"{self.agent_url}/command",
+                f"{self.agent_url}/command/execute",
                 json={"text": text}
             )
             response.raise_for_status()
 
             data = response.json()
-            print(f"[Agent] Response: {len(data.get('tool_calls', []))} tool calls")
+            tool_calls = data.get("tool_calls", [])
+            jango_commands = data.get("jango_commands", [])
+            print(f"[Agent] Response: {len(tool_calls)} tool calls")
+
+            # Send commands to Jango via UDP
+            if self.udp_socket and jango_commands:
+                for cmd in jango_commands:
+                    cmd_json = json.dumps(cmd).encode()
+                    self.udp_socket.sendto(cmd_json, (self.jango_host, self.jango_port))
+                    print(f"[Jango] Sent: {cmd}")
 
             # Broadcast agent response
             self.broadcast({
@@ -567,7 +590,8 @@ class WebVoicePipeline:
                 "original_text": text,
                 "duration": duration,
                 "message": data.get("message"),
-                "tool_calls": data.get("tool_calls", []),
+                "tool_calls": tool_calls,
+                "jango_commands": jango_commands,
                 "needs_confirmation": data.get("needs_confirmation", False),
                 "processing_time_ms": data.get("processing_time_ms", 0)
             })
@@ -607,6 +631,8 @@ class WebVoicePipeline:
     def stop(self):
         self.running = False
         self.http_client.close()
+        if self.udp_socket:
+            self.udp_socket.close()
 
 
 # Global pipeline reference
@@ -660,14 +686,16 @@ def broadcast_message(message: dict):
             connected_clients.discard(client)
 
 
-def run_pipeline(device: int, model: str, agent_url: str):
+def run_pipeline(device: int, model: str, agent_url: str, jango_host: str = None, jango_port: int = None):
     """Run the voice pipeline in a separate thread"""
     global pipeline
     pipeline = WebVoicePipeline(
         broadcast_func=broadcast_message,
         agent_url=agent_url,
         model_name=model,
-        input_device=device
+        input_device=device,
+        jango_host=jango_host,
+        jango_port=jango_port
     )
     pipeline.start()
 
@@ -686,22 +714,37 @@ def main():
                         help='Web server host')
     parser.add_argument('--agent-url', '-a', type=str, default='http://localhost:8887',
                         help='Agent API URL')
+    parser.add_argument('--jango-host', type=str, default='localhost',
+                        help='Jango control system host')
+    parser.add_argument('--jango-port', type=int, default=9000,
+                        help='Jango control system UDP port')
+    parser.add_argument('--no-jango', action='store_true',
+                        help='Disable sending commands to Jango')
     args = parser.parse_args()
 
-    global AGENT_URL
+    global AGENT_URL, JANGO_HOST, JANGO_PORT, JANGO_ENABLED
     AGENT_URL = args.agent_url
+    JANGO_HOST = args.jango_host
+    JANGO_PORT = args.jango_port
+    JANGO_ENABLED = not args.no_jango
 
     print(f"\n{'='*50}")
     print("Project Porg - Voice Command Interface")
     print(f"{'='*50}")
     print(f"Web UI: http://localhost:{args.port}")
     print(f"Agent API: {args.agent_url}")
+    if JANGO_ENABLED:
+        print(f"Jango UDP: {args.jango_host}:{args.jango_port}")
+    else:
+        print("Jango: disabled")
     print(f"{'='*50}\n")
 
     # Start voice pipeline in background thread
+    jango_host = args.jango_host if JANGO_ENABLED else None
+    jango_port = args.jango_port if JANGO_ENABLED else None
     pipeline_thread = threading.Thread(
         target=run_pipeline,
-        args=(args.device, args.model, args.agent_url),
+        args=(args.device, args.model, args.agent_url, jango_host, jango_port),
         daemon=True
     )
     pipeline_thread.start()
