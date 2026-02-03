@@ -1,0 +1,6 @@
+FROM nemo:r38.3.arm64-sbsa-cu130-24.04-numba
+
+# Install NeMo ASR with compatible Lhotse version
+RUN pip install 'nemo_toolkit[asr]' 'lhotse==1.29.0'
+
+WORKDIR /workspace

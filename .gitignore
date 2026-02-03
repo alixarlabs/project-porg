@@ -1,0 +1,48 @@
+# Build logs
+*.log
+
+# Audio files (use LFS for ones we want to track)
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+.venv/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+
+# Cloned repos (build dependencies)
+jetson-containers/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Model files (too large for git)
+*.nemo
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.bin

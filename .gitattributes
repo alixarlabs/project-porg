@@ -1,0 +1,10 @@
+# Git LFS tracking
+# Track large binary files if they need to be versioned
+
+# Audio samples (if we decide to include any)
+samples/*.wav filter=lfs diff=lfs merge=lfs -text
+samples/*.mp3 filter=lfs diff=lfs merge=lfs -text
+
+# Model files (if we decide to include any)
+models/*.nemo filter=lfs diff=lfs merge=lfs -text
+models/*.onnx filter=lfs diff=lfs merge=lfs -text
