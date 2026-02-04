@@ -12,6 +12,7 @@ Architecture:
 """
 
 import os
+import re
 import json
 import asyncio
 from typing import Optional, Any
@@ -186,6 +187,71 @@ IMPORTANT:
 
 
 # =============================================================================
+# Tool Call Text Parser (fallback for when vLLM doesn't parse correctly)
+# =============================================================================
+
+def parse_tool_calls_from_text(text: str) -> list[dict]:
+    """
+    Parse tool calls from text when vLLM returns them as message content.
+
+    Handles formats like:
+    - <tool_call>\ncamera_zoom {"direction": "in"}\n</tool_call>
+    - <tool_call>{"name": "camera_zoom", "arguments": {"direction": "in"}}</tool_call>
+    """
+    if not text:
+        return []
+
+    tool_calls = []
+
+    # Find all <tool_call>...</tool_call> blocks
+    pattern = r'<tool_call>\s*(.*?)\s*</tool_call>'
+    matches = re.findall(pattern, text, re.DOTALL)
+
+    for i, match in enumerate(matches):
+        match = match.strip()
+
+        # Try parsing as JSON first (standard format)
+        try:
+            data = json.loads(match)
+            if "name" in data:
+                tool_calls.append({
+                    "id": f"call_{i}",
+                    "name": data["name"],
+                    "arguments": data.get("arguments", {})
+                })
+                continue
+        except json.JSONDecodeError:
+            pass
+
+        # Try Qwen format: function_name {"arg": "value"} or function_name({"arg": "value"})
+        # Match: word followed by JSON object
+        qwen_pattern = r'^(\w+)\s*\(?\s*(\{.*\})\s*\)?$'
+        qwen_match = re.match(qwen_pattern, match, re.DOTALL)
+        if qwen_match:
+            func_name = qwen_match.group(1)
+            try:
+                args = json.loads(qwen_match.group(2))
+                tool_calls.append({
+                    "id": f"call_{i}",
+                    "name": func_name,
+                    "arguments": args
+                })
+                continue
+            except json.JSONDecodeError:
+                pass
+
+        # Try just function name with no args
+        if re.match(r'^\w+$', match):
+            tool_calls.append({
+                "id": f"call_{i}",
+                "name": match,
+                "arguments": {}
+            })
+
+    return tool_calls
+
+
+# =============================================================================
 # Request/Response Models
 # =============================================================================
 
@@ -305,7 +371,7 @@ async def process_command(request: CommandRequest):
 
         choice = response.choices[0]
 
-        # Parse tool calls
+        # Parse tool calls from structured response
         tool_calls = []
         if choice.message.tool_calls:
             for tc in choice.message.tool_calls:
@@ -317,6 +383,23 @@ async def process_command(request: CommandRequest):
 
         # Get any text message
         message = choice.message.content
+
+        # Fallback: parse tool calls from message text if none were returned
+        # This handles cases where vLLM doesn't parse them correctly
+        if not tool_calls and message:
+            parsed = parse_tool_calls_from_text(message)
+            for tc in parsed:
+                tool_calls.append(ToolCall(
+                    id=tc["id"],
+                    name=tc["name"],
+                    arguments=tc["arguments"]
+                ))
+            # Clear message if we extracted tool calls from it
+            if tool_calls:
+                # Remove tool_call tags from message
+                message = re.sub(r'<tool_call>.*?</tool_call>', '', message, flags=re.DOTALL).strip()
+                if not message:
+                    message = None
 
         # Update history
         add_to_history(session_id, "user", request.text)
