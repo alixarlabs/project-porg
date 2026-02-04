@@ -253,12 +253,62 @@ HTML_PAGE = """
             margin-top: 8px;
             text-align: right;
         }
+
+        .device-selector {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            padding: 10px;
+            background: #16213e;
+            border-radius: 8px;
+        }
+        .device-selector label {
+            font-size: 12px;
+            color: #888;
+            text-transform: uppercase;
+        }
+        .device-selector select {
+            background: #1a1a2e;
+            color: #eee;
+            border: 1px solid #4a5568;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 14px;
+            min-width: 300px;
+            cursor: pointer;
+        }
+        .device-selector select:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        .device-selector .refresh-btn {
+            background: #0f3d3e;
+            color: #00ff88;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 12px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .device-selector .refresh-btn:hover {
+            background: #1a5d5e;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Project Porg</h1>
         <div id="status" class="status disconnected">Connecting...</div>
+
+        <div class="device-selector">
+            <label>Audio Input:</label>
+            <select id="device-select">
+                <option value="">Loading devices...</option>
+            </select>
+            <button class="refresh-btn" onclick="refreshDevices()">↻</button>
+        </div>
 
         <div class="current-box">
             <div class="current-label">Current Speech</div>
@@ -291,9 +341,70 @@ HTML_PAGE = """
         const toolCallsEl = document.getElementById('tool-calls');
         const processingTimeEl = document.getElementById('processing-time');
         const historyEl = document.getElementById('history');
+        const deviceSelect = document.getElementById('device-select');
 
         let ws;
         let reconnectTimeout;
+        let currentDeviceId = null;
+
+        // Load available audio devices
+        async function refreshDevices() {
+            try {
+                const response = await fetch('/api/devices');
+                const data = await response.json();
+
+                deviceSelect.innerHTML = '';
+                data.devices.forEach(dev => {
+                    const option = document.createElement('option');
+                    option.value = dev.id;
+                    option.textContent = `${dev.name} (${dev.channels}ch)`;
+                    if (dev.id === data.current) {
+                        option.selected = true;
+                        currentDeviceId = dev.id;
+                    }
+                    deviceSelect.appendChild(option);
+                });
+
+                if (data.devices.length === 0) {
+                    deviceSelect.innerHTML = '<option value="">No input devices found</option>';
+                }
+            } catch (e) {
+                console.error('Failed to load devices:', e);
+                deviceSelect.innerHTML = '<option value="">Error loading devices</option>';
+            }
+        }
+
+        // Switch to selected device
+        async function switchDevice(deviceId) {
+            if (deviceId === '' || deviceId === currentDeviceId) return;
+
+            try {
+                statusEl.textContent = 'Switching audio device...';
+                statusEl.className = 'status processing';
+
+                const response = await fetch(`/api/device/${deviceId}`, { method: 'POST' });
+                const data = await response.json();
+
+                if (data.error) {
+                    console.error('Device switch error:', data.error);
+                    statusEl.textContent = `Error: ${data.error}`;
+                    statusEl.className = 'status disconnected';
+                } else {
+                    currentDeviceId = parseInt(deviceId);
+                    statusEl.textContent = 'Listening...';
+                    statusEl.className = 'status listening';
+                }
+            } catch (e) {
+                console.error('Failed to switch device:', e);
+                statusEl.textContent = 'Error switching device';
+                statusEl.className = 'status disconnected';
+            }
+        }
+
+        deviceSelect.addEventListener('change', (e) => switchDevice(e.target.value));
+
+        // Load devices on page load
+        refreshDevices();
 
         function connect() {
             ws = new WebSocket(`ws://${window.location.host}/ws`);
@@ -385,6 +496,11 @@ HTML_PAGE = """
                     llmMessageEl.textContent = `Error: ${data.error}`;
                     llmMessageEl.className = 'llm-message';
                     toolCallsEl.innerHTML = '<div class="no-tools">Error occurred</div>';
+                } else if (data.type === 'audio_error') {
+                    statusEl.textContent = `Audio Error: ${data.error}`;
+                    statusEl.className = 'status disconnected';
+                    // Refresh device list in case devices changed
+                    refreshDevices();
                 }
             };
         }
@@ -486,6 +602,7 @@ class WebVoicePipeline:
 
         self.audio_queue = queue.Queue()
         self.running = False
+        self._restart_audio = False
 
         # HTTP client for agent API
         self.http_client = httpx.Client(timeout=30.0)
@@ -615,18 +732,51 @@ class WebVoicePipeline:
         processing_thread = threading.Thread(target=self._process_audio)
         processing_thread.start()
 
-        with sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=1,
-            dtype=np.float32,
-            blocksize=CHUNK_SIZE,
-            callback=self._audio_callback,
-            device=self.input_device
-        ):
-            while self.running:
-                time.sleep(0.1)
+        while self.running:
+            self._restart_audio = False
+            try:
+                print(f"[Audio] Opening device {self.input_device}...")
+                with sd.InputStream(
+                    samplerate=SAMPLE_RATE,
+                    channels=1,
+                    dtype=np.float32,
+                    blocksize=CHUNK_SIZE,
+                    callback=self._audio_callback,
+                    device=self.input_device
+                ):
+                    while self.running and not self._restart_audio:
+                        time.sleep(0.1)
+
+                if self._restart_audio:
+                    print(f"[Audio] Restarting with device {self.input_device}...")
+                    # Clear any pending audio from old device
+                    while not self.audio_queue.empty():
+                        try:
+                            self.audio_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    self.vad.reset()
+                    self.is_speaking = False
+                    self.audio_buffer.clear()
+
+            except sd.PortAudioError as e:
+                print(f"[Audio] Device error: {e}")
+                self.broadcast({
+                    "type": "audio_error",
+                    "error": str(e),
+                    "device": self.input_device
+                })
+                # Wait before retrying
+                time.sleep(2.0)
 
         processing_thread.join()
+
+    def switch_device(self, device_id: int):
+        """Switch to a different audio input device"""
+        print(f"[Audio] Switching to device {device_id}...")
+        self.input_device = device_id
+        # Signal to restart audio capture
+        self._restart_audio = True
 
     def stop(self):
         self.running = False
@@ -648,6 +798,39 @@ async def startup_event():
 @app.get("/")
 async def get():
     return HTMLResponse(HTML_PAGE)
+
+
+@app.get("/api/devices")
+async def list_audio_devices():
+    """List available audio input devices"""
+    import sounddevice as sd
+    devices = sd.query_devices()
+    input_devices = []
+    for i, dev in enumerate(devices):
+        if dev['max_input_channels'] > 0:
+            input_devices.append({
+                "id": i,
+                "name": dev['name'],
+                "channels": dev['max_input_channels'],
+                "sample_rate": dev['default_samplerate']
+            })
+    current = pipeline.input_device if pipeline else None
+    return {"devices": input_devices, "current": current}
+
+
+@app.post("/api/device/{device_id}")
+async def set_audio_device(device_id: int):
+    """Switch to a different audio input device"""
+    global pipeline
+    if not pipeline:
+        return {"error": "Pipeline not initialized"}, 500
+
+    # Restart the audio capture with new device
+    try:
+        pipeline.switch_device(device_id)
+        return {"status": "ok", "device": device_id}
+    except Exception as e:
+        return {"error": str(e)}, 500
 
 
 @app.websocket("/ws")
